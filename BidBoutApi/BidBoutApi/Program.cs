@@ -28,18 +28,20 @@ builder.Services.AddAuthentication(options =>
             ValidateIssuerSigningKey = true,
             ValidIssuer = builder.Configuration["JwtSettings:Issuer"],
             ValidAudience = builder.Configuration["JwtSettings:Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["JwtSettings:Key"]))
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["JwtSettings:Key"]!))
         };
     });
 
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowGithubIO",
-        policy =>
-        {
-            policy.WithOrigins("https://marshmalllows.github.io").AllowAnyMethod().AllowAnyHeader();
-        });
-}); 
+    options.AddPolicy("AllowLocalHost", policy =>
+    {
+        policy.WithOrigins("http://localhost:5173") 
+            .AllowAnyMethod()
+            .AllowAnyHeader()
+            .AllowCredentials();
+    });
+});
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddControllers();
@@ -54,7 +56,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
-app.UseCors("AllowGithubIO");
+app.UseCors("AllowLocalHost");
 app.UseAuthentication();
 app.UseAuthorization();
 

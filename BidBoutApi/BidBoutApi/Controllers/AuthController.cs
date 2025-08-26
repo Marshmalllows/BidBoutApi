@@ -9,26 +9,18 @@ namespace BidBoutApi.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class AuthController : ControllerBase
+public class AuthController(MyDbContext context, IConfiguration configuration) : ControllerBase
 {
-    private readonly MyDbContext _context;
-    private readonly IConfiguration _configuration;
-
-    public AuthController(MyDbContext context, IConfiguration configuration)
-    {
-        _context = context;
-        _configuration = configuration;
-    }
-
     [HttpPost("login")]
     public IActionResult Login([FromBody] DTOs.LoginRequest request)
     {
-        var user = _context.Users.SingleOrDefault(u => u.Email == request.Email);
+        var user = context.Users.SingleOrDefault(u => u.Email == request.Email);
         if (user == null || !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
             return BadRequest("Wrong email or password!");
 
         var tokenHandler = new JwtSecurityTokenHandler();
-        var key = Encoding.UTF8.GetBytes(_configuration["JwtSettings:Key"]!);
+        var key = Encoding.UTF8.GetBytes(configuration["JwtSettings:Key"]!);
+
         var tokenDescriptor = new SecurityTokenDescriptor
         {
             Subject = new ClaimsIdentity(new[]
@@ -36,30 +28,37 @@ public class AuthController : ControllerBase
                 new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
                 new Claim(ClaimTypes.Email, user.Email)
             }),
-            Expires = DateTime.UtcNow.AddMinutes(_configuration.GetValue<int>("JwtSettings:ExpiryMinutes")),
-            Issuer = _configuration["JwtSettings:Issuer"],
-            Audience = _configuration["JwtSettings:Audience"],
-            SigningCredentials =
-                new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
+            Expires = DateTime.UtcNow.AddMinutes(configuration.GetValue<int>("JwtSettings:ExpiryMinutes")),
+            Issuer = configuration["JwtSettings:Issuer"],
+            Audience = configuration["JwtSettings:Audience"],
+            SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
         };
-        var token = tokenHandler.CreateToken(tokenDescriptor);
-        var jwtToken = tokenHandler.WriteToken(token);
+
+        var accessToken = tokenHandler.CreateToken(tokenDescriptor);
+        var jwtToken = tokenHandler.WriteToken(accessToken);
 
         user.RefreshToken = Guid.NewGuid().ToString();
-        user.RefreshTokenExpiry = DateTime.UtcNow.AddDays(_configuration.GetValue<int>("JwtSettings:ExpiryDays"));
-        _context.SaveChanges();
+        user.RefreshTokenExpiry = DateTime.UtcNow.AddDays(configuration.GetValue<int>("JwtSettings:ExpiryDays"));
+        context.SaveChanges();
+
+        Response.Cookies.Append("refreshToken", user.RefreshToken, new CookieOptions
+        {
+            HttpOnly = true,
+            Secure = true,
+            SameSite = SameSiteMode.Strict,
+            Expires = user.RefreshTokenExpiry
+        });
 
         return Ok(new
         {
-            token = jwtToken,
-            refreshToken = user.RefreshToken
+            token = jwtToken
         });
     }
-    
+
     [HttpPost("register")]
     public IActionResult Register([FromBody] DTOs.RegisterRequest request)
     {
-        if (_context.Users.Any(u => u.Email == request.Email))
+        if (context.Users.Any(u => u.Email == request.Email))
             return BadRequest("User with this email already exists!");
 
         var user = new Models.User
@@ -69,22 +68,52 @@ public class AuthController : ControllerBase
             CreatedAt = DateTime.UtcNow
         };
 
-        _context.Users.Add(user);
-        _context.SaveChanges();
+        context.Users.Add(user);
+        context.SaveChanges();
 
         return Ok(new { message = "Registered successfully!" });
     }
 
     [HttpPost("refresh")]
-    public IActionResult Refresh([FromBody] DTOs.RefreshTokenRequest request)
+    public IActionResult Refresh([FromBody] DTOs.RefreshRequest request)
     {
-        var user = _context.Users.SingleOrDefault(u => u.RefreshToken == request.RefreshToken);
+        var tokenHandler = new JwtSecurityTokenHandler();
+        var key = Encoding.UTF8.GetBytes(configuration["JwtSettings:Key"]!);
+
+        ClaimsPrincipal principal;
+        try
+        {
+            var validationParameters = new TokenValidationParameters
+            {
+                ValidateIssuerSigningKey = true,
+                IssuerSigningKey = new SymmetricSecurityKey(key),
+                ValidateIssuer = true,
+                ValidIssuer = configuration["JwtSettings:Issuer"],
+                ValidateAudience = true,
+                ValidAudience = configuration["JwtSettings:Audience"],
+                ValidateLifetime = false
+            };
+
+            principal = tokenHandler.ValidateToken(request.AccessToken, validationParameters, out _);
+        }
+        catch
+        {
+            return Unauthorized("Invalid access token!");
+        }
+
+        var userId = principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (userId == null) return Unauthorized("UserId not found in access token!");
+
+        var refreshToken = Request.Cookies["refreshToken"];
+        if (string.IsNullOrEmpty(refreshToken))
+            return Unauthorized("Refresh token cookie missing!");
+
+        var user = context.Users.SingleOrDefault(u =>
+            u.Id == int.Parse(userId) && u.RefreshToken == refreshToken);
 
         if (user == null || user.RefreshTokenExpiry < DateTime.UtcNow)
-            return Unauthorized("Refresh token is not valid or expired!");
+            return Unauthorized("Refresh token invalid or expired!");
 
-        var tokenHandler = new JwtSecurityTokenHandler();
-        var key = Encoding.UTF8.GetBytes(_configuration["JwtSettings:Key"]!);
         var tokenDescriptor = new SecurityTokenDescriptor
         {
             Subject = new ClaimsIdentity(new[]
@@ -92,22 +121,31 @@ public class AuthController : ControllerBase
                 new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
                 new Claim(ClaimTypes.Email, user.Email)
             }),
-            Expires = DateTime.UtcNow.AddMinutes(_configuration.GetValue<int>("JwtSettings:ExpiryMinutes")),
-            Issuer = _configuration["JwtSettings:Issuer"],
-            Audience = _configuration["JwtSettings:Audience"],
-            SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
+            Expires = DateTime.UtcNow.AddMinutes(configuration.GetValue<int>("JwtSettings:ExpiryMinutes")),
+            Issuer = configuration["JwtSettings:Issuer"],
+            Audience = configuration["JwtSettings:Audience"],
+            SigningCredentials =
+                new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
         };
 
-        var token = tokenHandler.CreateToken(tokenDescriptor);
-        var jwtToken = tokenHandler.WriteToken(token);
-        
-        _context.SaveChanges();
+        var newAccessToken = tokenHandler.CreateToken(tokenDescriptor);
+        var jwtToken = tokenHandler.WriteToken(newAccessToken);
+
+        user.RefreshToken = Guid.NewGuid().ToString();
+        user.RefreshTokenExpiry = DateTime.UtcNow.AddDays(configuration.GetValue<int>("JwtSettings:ExpiryDays"));
+        context.SaveChanges();
+
+        Response.Cookies.Append("refreshToken", user.RefreshToken, new CookieOptions
+        {
+            HttpOnly = true,
+            Secure = true,
+            SameSite = SameSiteMode.Strict,
+            Expires = user.RefreshTokenExpiry
+        });
 
         return Ok(new
         {
-            token = jwtToken,
-            refreshToken = user.RefreshToken
+            token = jwtToken
         });
     }
-
 }
