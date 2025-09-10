@@ -35,7 +35,5 @@ public class User
     [Required]
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 
-    public string? RefreshToken { get; set; }
-    
-    public DateTime? RefreshTokenExpiry { get; set; }
+    public virtual ICollection<RefreshToken> RefreshTokens { get; set; } = new List<RefreshToken>();
 }

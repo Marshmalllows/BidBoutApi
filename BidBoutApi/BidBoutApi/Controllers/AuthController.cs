@@ -38,16 +38,25 @@ public class AuthController(MyDbContext context, IConfiguration configuration) :
         var accessToken = tokenHandler.CreateToken(tokenDescriptor);
         var jwtToken = tokenHandler.WriteToken(accessToken);
 
-        user.RefreshToken = Guid.NewGuid().ToString();
-        user.RefreshTokenExpiry = DateTime.UtcNow.AddDays(configuration.GetValue<int>("JwtSettings:ExpiryDays"));
+        var refreshTokenValue = Guid.NewGuid().ToString();
+        var refreshTokenExpiry = DateTime.UtcNow.AddDays(configuration.GetValue<int>("JwtSettings:ExpiryDays"));
+
+        var refreshToken = new Models.RefreshToken
+        {
+            UserId = user.Id,
+            Token = refreshTokenValue,
+            ExpiresAt = refreshTokenExpiry
+        };
+
+        context.RefreshTokens.Add(refreshToken);
         context.SaveChanges();
 
-        Response.Cookies.Append("refreshToken", user.RefreshToken, new CookieOptions
+        Response.Cookies.Append("refreshToken", refreshTokenValue, new CookieOptions
         {
             HttpOnly = true,
             Secure = true,
             SameSite = SameSiteMode.Strict,
-            Expires = user.RefreshTokenExpiry
+            Expires = refreshTokenExpiry
         });
 
         return Ok(new
@@ -66,7 +75,8 @@ public class AuthController(MyDbContext context, IConfiguration configuration) :
         {
             Email = request.Email,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password),
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
         };
 
         context.Users.Add(user);
@@ -78,17 +88,20 @@ public class AuthController(MyDbContext context, IConfiguration configuration) :
     [HttpPost("refresh")]
     public IActionResult Refresh()
     {
-        var refreshToken = Request.Cookies["refreshToken"];
-        if (string.IsNullOrEmpty(refreshToken))
+        var refreshTokenValue = Request.Cookies["refreshToken"];
+        if (string.IsNullOrEmpty(refreshTokenValue))
             return Unauthorized("Refresh token missing!");
 
-        var user = context.Users.SingleOrDefault(u => u.RefreshToken == refreshToken);
-        if (user == null || user.RefreshTokenExpiry < DateTime.UtcNow)
+        var refreshToken = context.RefreshTokens.SingleOrDefault(rt => rt.Token == refreshTokenValue);
+        if (refreshToken == null || refreshToken.ExpiresAt < DateTime.UtcNow)
             return Unauthorized("Refresh token invalid or expired!");
+
+        var user = context.Users.SingleOrDefault(u => u.Id == refreshToken.UserId);
+        if (user == null)
+            return Unauthorized("User not found!");
 
         var tokenHandler = new JwtSecurityTokenHandler();
         var key = Encoding.UTF8.GetBytes(configuration["JwtSettings:Key"]!);
-
         var tokenDescriptor = new SecurityTokenDescriptor
         {
             Subject = new ClaimsIdentity(new[]
@@ -102,20 +115,21 @@ public class AuthController(MyDbContext context, IConfiguration configuration) :
             SigningCredentials =
                 new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
         };
-
         var newAccessToken = tokenHandler.CreateToken(tokenDescriptor);
         var jwtToken = tokenHandler.WriteToken(newAccessToken);
 
-        user.RefreshToken = Guid.NewGuid().ToString();
-        user.RefreshTokenExpiry = DateTime.UtcNow.AddDays(configuration.GetValue<int>("JwtSettings:ExpiryDays"));
+        refreshToken.Token = Guid.NewGuid().ToString();
+        refreshToken.ExpiresAt = DateTime.UtcNow.AddDays(configuration.GetValue<int>("JwtSettings:ExpiryDays"));
+        refreshToken.UpdatedAt = DateTime.UtcNow;
+
         context.SaveChanges();
 
-        Response.Cookies.Append("refreshToken", user.RefreshToken, new CookieOptions
+        Response.Cookies.Append("refreshToken", refreshToken.Token, new CookieOptions
         {
             HttpOnly = true,
             Secure = false, // локально
             SameSite = SameSiteMode.Strict,
-            Expires = user.RefreshTokenExpiry
+            Expires = refreshToken.ExpiresAt
         });
 
         return Ok(new { token = jwtToken, user = new { user.Id, user.Email } });
