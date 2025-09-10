@@ -36,12 +36,18 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowLocalHost", policy =>
     {
-        policy.WithOrigins("http://localhost:5173") 
+        policy.WithOrigins(
+                "http://localhost:5173",
+                "http://192.168.56.1:5173",
+                "http://192.168.0.103:5173",
+                "http://26.60.52.74:5173"
+            )
             .AllowAnyMethod()
             .AllowAnyHeader()
             .AllowCredentials();
     });
 });
+
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddControllers();

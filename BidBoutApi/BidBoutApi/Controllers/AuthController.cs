@@ -31,7 +31,8 @@ public class AuthController(MyDbContext context, IConfiguration configuration) :
             Expires = DateTime.UtcNow.AddMinutes(configuration.GetValue<int>("JwtSettings:ExpiryMinutes")),
             Issuer = configuration["JwtSettings:Issuer"],
             Audience = configuration["JwtSettings:Audience"],
-            SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
+            SigningCredentials =
+                new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
         };
 
         var accessToken = tokenHandler.CreateToken(tokenDescriptor);
@@ -59,7 +60,7 @@ public class AuthController(MyDbContext context, IConfiguration configuration) :
     public IActionResult Register([FromBody] DTOs.RegisterRequest request)
     {
         if (context.Users.Any(u => u.Email == request.Email))
-            return BadRequest("User with this email already exists!");
+            return Conflict("User with this email already exists!");
 
         var user = new Models.User
         {
@@ -75,44 +76,18 @@ public class AuthController(MyDbContext context, IConfiguration configuration) :
     }
 
     [HttpPost("refresh")]
-    public IActionResult Refresh([FromBody] DTOs.RefreshRequest request)
+    public IActionResult Refresh()
     {
-        var tokenHandler = new JwtSecurityTokenHandler();
-        var key = Encoding.UTF8.GetBytes(configuration["JwtSettings:Key"]!);
-
-        ClaimsPrincipal principal;
-        try
-        {
-            var validationParameters = new TokenValidationParameters
-            {
-                ValidateIssuerSigningKey = true,
-                IssuerSigningKey = new SymmetricSecurityKey(key),
-                ValidateIssuer = true,
-                ValidIssuer = configuration["JwtSettings:Issuer"],
-                ValidateAudience = true,
-                ValidAudience = configuration["JwtSettings:Audience"],
-                ValidateLifetime = false
-            };
-
-            principal = tokenHandler.ValidateToken(request.AccessToken, validationParameters, out _);
-        }
-        catch
-        {
-            return Unauthorized("Invalid access token!");
-        }
-
-        var userId = principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        if (userId == null) return Unauthorized("UserId not found in access token!");
-
         var refreshToken = Request.Cookies["refreshToken"];
         if (string.IsNullOrEmpty(refreshToken))
-            return Unauthorized("Refresh token cookie missing!");
+            return Unauthorized("Refresh token missing!");
 
-        var user = context.Users.SingleOrDefault(u =>
-            u.Id == int.Parse(userId) && u.RefreshToken == refreshToken);
-
+        var user = context.Users.SingleOrDefault(u => u.RefreshToken == refreshToken);
         if (user == null || user.RefreshTokenExpiry < DateTime.UtcNow)
             return Unauthorized("Refresh token invalid or expired!");
+
+        var tokenHandler = new JwtSecurityTokenHandler();
+        var key = Encoding.UTF8.GetBytes(configuration["JwtSettings:Key"]!);
 
         var tokenDescriptor = new SecurityTokenDescriptor
         {
@@ -138,14 +113,11 @@ public class AuthController(MyDbContext context, IConfiguration configuration) :
         Response.Cookies.Append("refreshToken", user.RefreshToken, new CookieOptions
         {
             HttpOnly = true,
-            Secure = true,
+            Secure = false, // локально
             SameSite = SameSiteMode.Strict,
             Expires = user.RefreshTokenExpiry
         });
 
-        return Ok(new
-        {
-            token = jwtToken
-        });
+        return Ok(new { token = jwtToken, user = new { user.Id, user.Email } });
     }
 }
