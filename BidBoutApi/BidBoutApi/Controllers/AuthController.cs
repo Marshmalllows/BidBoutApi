@@ -38,32 +38,63 @@ public class AuthController(MyDbContext context, IConfiguration configuration) :
         var accessToken = tokenHandler.CreateToken(tokenDescriptor);
         var jwtToken = tokenHandler.WriteToken(accessToken);
 
-        var refreshTokenValue = Guid.NewGuid().ToString();
-        var refreshTokenExpiry = DateTime.UtcNow.AddDays(configuration.GetValue<int>("JwtSettings:ExpiryDays"));
+        var existingRefreshToken = context.RefreshTokens
+            .SingleOrDefault(rt => rt.UserId == user.Id &&
+                                   rt.DeviceType == request.DeviceType &&
+                                   rt.Browser == request.Browser &&
+                                   rt.Os == request.OS);
 
-        var refreshToken = new Models.RefreshToken
+        if (existingRefreshToken != null)
         {
-            UserId = user.Id,
-            Token = refreshTokenValue,
-            ExpiresAt = refreshTokenExpiry
-        };
+            existingRefreshToken.Token = Guid.NewGuid().ToString();
+            existingRefreshToken.ExpiresAt =
+                DateTime.UtcNow.AddDays(configuration.GetValue<int>("JwtSettings:ExpiryDays"));
+            existingRefreshToken.UpdatedAt = DateTime.UtcNow;
 
-        context.RefreshTokens.Add(refreshToken);
-        context.SaveChanges();
+            context.SaveChanges();
 
-        Response.Cookies.Append("refreshToken", refreshTokenValue, new CookieOptions
+            Response.Cookies.Append("refreshToken", existingRefreshToken.Token, new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = true,
+                SameSite = SameSiteMode.Strict,
+                Expires = existingRefreshToken.ExpiresAt
+            });
+        }
+        else
         {
-            HttpOnly = true,
-            Secure = true,
-            SameSite = SameSiteMode.Strict,
-            Expires = refreshTokenExpiry
-        });
+            var refreshTokenValue = Guid.NewGuid().ToString();
+            var refreshTokenExpiry = DateTime.UtcNow.AddDays(configuration.GetValue<int>("JwtSettings:ExpiryDays"));
+
+            var refreshToken = new Models.RefreshToken
+            {
+                UserId = user.Id,
+                Token = refreshTokenValue,
+                ExpiresAt = refreshTokenExpiry,
+                DeviceType = request.DeviceType,
+                Browser = request.Browser,
+                Os = request.OS
+            };
+
+            context.RefreshTokens.Add(refreshToken);
+            context.SaveChanges();
+
+            Response.Cookies.Append("refreshToken", refreshTokenValue, new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = true,
+                SameSite = SameSiteMode.Strict,
+                Expires = refreshTokenExpiry
+            });
+        }
 
         return Ok(new
         {
-            token = jwtToken
+            token = jwtToken,
+            user = new { user.Id, user.Email }
         });
     }
+
 
     [HttpPost("register")]
     public IActionResult Register([FromBody] DTOs.RegisterRequest request)
@@ -82,8 +113,57 @@ public class AuthController(MyDbContext context, IConfiguration configuration) :
         context.Users.Add(user);
         context.SaveChanges();
 
-        return Ok(new { message = "Registered successfully!" });
+        var tokenHandler = new JwtSecurityTokenHandler();
+        var key = Encoding.UTF8.GetBytes(configuration["JwtSettings:Key"]!);
+
+        var tokenDescriptor = new SecurityTokenDescriptor
+        {
+            Subject = new ClaimsIdentity(new[]
+            {
+                new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
+                new Claim(ClaimTypes.Email, user.Email)
+            }),
+            Expires = DateTime.UtcNow.AddMinutes(configuration.GetValue<int>("JwtSettings:ExpiryMinutes")),
+            Issuer = configuration["JwtSettings:Issuer"],
+            Audience = configuration["JwtSettings:Audience"],
+            SigningCredentials =
+                new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
+        };
+
+        var accessToken = tokenHandler.CreateToken(tokenDescriptor);
+        var jwtToken = tokenHandler.WriteToken(accessToken);
+
+        var refreshTokenValue = Guid.NewGuid().ToString();
+        var refreshTokenExpiry = DateTime.UtcNow.AddDays(configuration.GetValue<int>("JwtSettings:ExpiryDays"));
+
+        var refreshToken = new Models.RefreshToken
+        {
+            UserId = user.Id,
+            Token = refreshTokenValue,
+            ExpiresAt = refreshTokenExpiry,
+            DeviceType = request.DeviceType,
+            Browser = request.Browser,
+            Os = request.OS
+        };
+
+        context.RefreshTokens.Add(refreshToken);
+        context.SaveChanges();
+
+        Response.Cookies.Append("refreshToken", refreshTokenValue, new CookieOptions
+        {
+            HttpOnly = true,
+            Secure = true,
+            SameSite = SameSiteMode.Strict,
+            Expires = refreshTokenExpiry
+        });
+
+        return Ok(new
+        {
+            token = jwtToken,
+            user = new { user.Id, user.Email }
+        });
     }
+
 
     [HttpPost("refresh")]
     public IActionResult Refresh()
