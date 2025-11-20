@@ -43,4 +43,6 @@ public class Product
     public User Creator { get; set; }
     
     public Category Category { get; set; }
+    
+    public ICollection<Image> Images { get; set; } = new List<Image>();
 }

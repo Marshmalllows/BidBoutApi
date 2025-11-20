@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using System.Text.Json.Serialization;
 
 namespace BidBoutApi.Models;
 
@@ -36,5 +37,6 @@ public class RefreshToken
     [Required]
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 
+    [JsonIgnore]
     public virtual User User { get; set; }
 }
