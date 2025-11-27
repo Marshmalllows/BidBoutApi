@@ -207,7 +207,7 @@ public class AuthController(MyDbContext context, IConfiguration configuration) :
         Response.Cookies.Append("refreshToken", refreshToken.Token, new CookieOptions
         {
             HttpOnly = true,
-            Secure = false, // локально
+            Secure = false,
             SameSite = SameSiteMode.Strict,
             Expires = refreshToken.ExpiresAt
         });

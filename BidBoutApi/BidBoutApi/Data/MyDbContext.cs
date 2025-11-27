@@ -16,4 +16,8 @@ public class MyDbContext : DbContext
     public DbSet<Product> Products { get; set; }
     
     public DbSet<Image> Images { get; set; }
+    
+    public DbSet<Bid> BidsHistory { get; set; }
+    
+    public DbSet<AutoBid> AutoBids { get; set; }
 }

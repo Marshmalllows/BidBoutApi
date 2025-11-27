@@ -28,7 +28,13 @@ public class User
     [Required]
     [MaxLength(255)]
     public string PasswordHash { get; set; }
-
+    
+    [MaxLength(255)]
+    public string? Region { get; set; }
+    
+    [MaxLength(255)]
+    public string? City { get; set; }
+    
     [Required]
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 
