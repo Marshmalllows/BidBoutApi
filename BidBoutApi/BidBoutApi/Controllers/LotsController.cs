@@ -1,7 +1,8 @@
-using System.Security.Claims; // Не забудь додати цей юзінг
+using System.Security.Claims;
 using BidBoutApi.Data;
 using BidBoutApi.DTOs;
 using BidBoutApi.Models;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -17,20 +18,12 @@ public class LotsController(MyDbContext context) : ControllerBase
         var rawProducts = context.Products
             .Include(p => p.Category)
             .Include(p => p.Images)
+            .Where(p => p.Status == 0) 
             .Select(p => new
             {
-                p.Id,
-                p.Title,
-                p.PickupPlace,
-                p.Description,
-                p.StartDate,
-                p.EndDate,
-                p.ReservePrice,
-                p.CategoryId,
+                p.Id, p.Title, p.PickupPlace, p.Description, p.StartDate, p.EndDate, p.ReservePrice, p.CategoryId,
                 CategoryName = p.Category.Name,
-                CurrentBid = context.BidsHistory
-                    .Where(b => b.LotId == p.Id)
-                    .Max(b => (int?)b.Amount) ?? 0,
+                CurrentBid = context.BidsHistory.Where(b => b.LotId == p.Id).Max(b => (int?)b.Amount) ?? 0,
                 Images = p.Images.Select(i => new { i.Id, i.ImageData }).ToList()
             })
             .ToList();
@@ -45,16 +38,8 @@ public class LotsController(MyDbContext context) : ControllerBase
             EndDate = DateTime.SpecifyKind(p.EndDate, DateTimeKind.Utc),
             ReservePrice = p.ReservePrice,
             CurrentBid = p.CurrentBid,
-            Category = new CategoryResponse
-            {
-                Id = p.CategoryId,
-                Name = p.CategoryName
-            },
-            Images = p.Images.Select(i => new ImageResponse
-            {
-                Id = i.Id,
-                ImageData = Convert.ToBase64String(i.ImageData)
-            }).ToList()
+            Category = new CategoryResponse { Id = p.CategoryId, Name = p.CategoryName },
+            Images = p.Images.Select(i => new ImageResponse { Id = i.Id, ImageData = Convert.ToBase64String(i.ImageData) }).ToList()
         }).ToList();
 
         return Ok(response);
@@ -69,11 +54,14 @@ public class LotsController(MyDbContext context) : ControllerBase
         var product = context.Products
             .Include(p => p.Category)
             .Include(p => p.Images)
-            .Include(p => p.Creator) // Потрібно для контактів
+            .Include(p => p.Creator)
             .FirstOrDefault(p => p.Id == id);
 
-        if (product == null)
-            return NotFound();
+        if (product == null) return NotFound();
+
+        var sellerReviews = context.Reviews.Where(r => r.TargetUserId == product.CreatorId).ToList();
+        var sellerRating = sellerReviews.Any() ? sellerReviews.Average(r => r.Rating) : 0;
+        var reviewCount = sellerReviews.Count;
 
         var rawBids = context.BidsHistory
             .Include(b => b.Bidder)
@@ -81,13 +69,8 @@ public class LotsController(MyDbContext context) : ControllerBase
             .OrderByDescending(b => b.Amount)
             .Select(b => new 
             {
-                b.Id,
-                b.Amount,
-                b.CreatedAt,
-                b.BidderId,
-                FirstName = b.Bidder.FirstName,
-                LastName = b.Bidder.LastName,
-                Email = b.Bidder.Email
+                b.Id, b.Amount, b.CreatedAt, b.BidderId,
+                FirstName = b.Bidder.FirstName, LastName = b.Bidder.LastName, Email = b.Bidder.Email
             })
             .ToList();
 
@@ -98,23 +81,23 @@ public class LotsController(MyDbContext context) : ControllerBase
             CreatedAt = DateTime.SpecifyKind(b.CreatedAt, DateTimeKind.Utc),
             BidderId = b.BidderId,
             BidderName = (!string.IsNullOrEmpty(b.FirstName) && !string.IsNullOrEmpty(b.LastName))
-                ? $"{b.FirstName} {b.LastName}"
-                : b.Email.Split('@')[0]
+                ? $"{b.FirstName} {b.LastName}" : b.Email.Split('@')[0]
         }).ToList();
 
         var currentBid = bidsDto.FirstOrDefault()?.Amount ?? 0;
-        var winnerId = bidsDto.FirstOrDefault()?.BidderId; 
+        var winnerId = bidsDto.FirstOrDefault()?.BidderId;
 
         var sellerName = (!string.IsNullOrEmpty(product.Creator.FirstName) && !string.IsNullOrEmpty(product.Creator.LastName))
-            ? $"{product.Creator.FirstName} {product.Creator.LastName}"
-            : product.Creator.Email.Split('@')[0];
+            ? $"{product.Creator.FirstName} {product.Creator.LastName}" : product.Creator.Email.Split('@')[0];
 
         var isEnded = product.EndDate <= DateTime.UtcNow;
         var isWinner = isEnded && currentUserId.HasValue && currentUserId.Value == winnerId;
+        var isOwner = currentUserId.HasValue && currentUserId.Value == product.CreatorId;
 
         var response = new ProductResponse
         {
             Id = product.Id,
+            CreatorId = product.CreatorId,
             Title = product.Title,
             PickupPlace = product.PickupPlace,
             Description = product.Description,
@@ -123,24 +106,127 @@ public class LotsController(MyDbContext context) : ControllerBase
             ReservePrice = product.ReservePrice,
             CurrentBid = currentBid,
             SellerName = sellerName,
+            SellerRating = Math.Round(sellerRating, 1),
+            SellerReviewCount = reviewCount,
             Bids = bidsDto,
-            
-            SellerEmail = isWinner ? product.Creator.Email : null,
-            SellerPhone = isWinner ? product.Creator.Phone : null,
-
-            Category = new CategoryResponse
-            {
-                Id = product.Category.Id,
-                Name = product.Category.Name
-            },
-            Images = product.Images.Select(i => new ImageResponse
-            {
-                Id = i.Id,
-                ImageData = Convert.ToBase64String(i.ImageData)
-            }).ToList()
+            SellerEmail = (isWinner || isOwner) ? product.Creator.Email : null,
+            SellerPhone = (isWinner || isOwner) ? product.Creator.Phone : null,
+            Category = new CategoryResponse { Id = product.Category.Id, Name = product.Category.Name },
+            Images = product.Images.Select(i => new ImageResponse { Id = i.Id, ImageData = Convert.ToBase64String(i.ImageData) }).ToList()
         };
 
         return Ok(response);
+    }
+
+    [HttpGet("my")]
+    [Authorize]
+    public IActionResult GetMyLots()
+    {
+        var userId = GetUserId();
+        if (userId == -1) return Unauthorized();
+
+        var rawProducts = context.Products
+            .Include(p => p.Category)
+            .Include(p => p.Images)
+            .Where(p => p.CreatorId == userId && p.Status == 0)
+            .OrderByDescending(p => p.CreatedAt)
+            .Select(p => new
+            {
+                p.Id, p.Title, p.PickupPlace, p.Description, p.StartDate, p.EndDate, p.ReservePrice, p.CategoryId,
+                CategoryName = p.Category.Name,
+                CurrentBid = context.BidsHistory.Where(b => b.LotId == p.Id).Max(b => (int?)b.Amount) ?? 0,
+                Images = p.Images.Select(i => new { i.Id, i.ImageData }).ToList()
+            })
+            .ToList();
+
+        var response = rawProducts.Select(p => new ProductResponse
+        {
+            Id = p.Id,
+            Title = p.Title,
+            PickupPlace = p.PickupPlace,
+            Description = p.Description,
+            StartDate = DateTime.SpecifyKind(p.StartDate, DateTimeKind.Utc),
+            EndDate = DateTime.SpecifyKind(p.EndDate, DateTimeKind.Utc),
+            ReservePrice = p.ReservePrice,
+            CurrentBid = p.CurrentBid,
+            Category = new CategoryResponse { Id = p.CategoryId, Name = p.CategoryName },
+            Images = p.Images.Select(i => new ImageResponse { Id = i.Id, ImageData = Convert.ToBase64String(i.ImageData) }).ToList()
+        }).ToList();
+
+        return Ok(response);
+    }
+
+    [HttpDelete("{id:int}")]
+    [Authorize]
+    public async Task<IActionResult> Delete(int id)
+    {
+        var userId = GetUserId();
+        if (userId == -1) return Unauthorized();
+
+        var product = await context.Products.FindAsync(id);
+        if (product == null) return NotFound();
+
+        if (product.CreatorId != userId) return Forbid();
+
+        if (product.EndDate <= DateTime.UtcNow) 
+            return BadRequest("Cannot delete closed auction");
+
+        product.Status = 1; 
+        await context.SaveChangesAsync();
+
+        return Ok(new { message = "Lot cancelled successfully" });
+    }
+
+    [HttpPut("{id:int}")]
+    [Authorize]
+    public async Task<IActionResult> Update(int id, [FromForm] CreateProductRequest dto, [FromForm] List<int> deletedImageIds)
+    {
+        var userId = GetUserId();
+        if (userId == -1) return Unauthorized();
+
+        var product = await context.Products.Include(p => p.Images).FirstOrDefaultAsync(p => p.Id == id);
+        if (product == null) return NotFound();
+
+        if (product.CreatorId != userId) return Forbid();
+
+        if (product.StartDate <= DateTime.UtcNow)
+            return BadRequest("Cannot edit lot that has already started");
+
+        product.Title = dto.Title;
+        product.CategoryId = dto.CategoryId;
+        product.PickupPlace = dto.PickupPlace;
+        product.Description = dto.Description;
+        
+        var utcStart = dto.StartDate.ToUniversalTime();
+        product.StartDate = utcStart;
+        product.EndDate = utcStart.AddDays(dto.Duration);
+        product.ReservePrice = dto.ReservePrice;
+        product.UpdatedAt = DateTime.UtcNow;
+
+        if (deletedImageIds != null && deletedImageIds.Any())
+        {
+            var imagesToDelete = product.Images
+                .Where(i => deletedImageIds.Contains(i.Id))
+                .ToList();
+
+            if (imagesToDelete.Any())
+            {
+                context.Images.RemoveRange(imagesToDelete);
+            }
+        }
+
+        if (dto.Images.Length > 0)
+        {
+            foreach (var file in dto.Images)
+            {
+                using var ms = new MemoryStream();
+                await file.CopyToAsync(ms);
+                product.Images.Add(new Image { ImageData = ms.ToArray() });
+            }
+        }
+
+        await context.SaveChangesAsync();
+        return Ok(new { message = "Lot updated" });
     }
 
     [HttpPost]
@@ -172,7 +258,8 @@ public class LotsController(MyDbContext context) : ControllerBase
             CreatorId = user.Id,
             Images = new List<Image>(),
             CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow
+            UpdatedAt = DateTime.UtcNow,
+            Status = 0
         };
 
         foreach (var file in dto.Images)
@@ -196,16 +283,16 @@ public class LotsController(MyDbContext context) : ControllerBase
             EndDate = DateTime.SpecifyKind(product.EndDate, DateTimeKind.Utc),
             ReservePrice = product.ReservePrice,
             CurrentBid = 0,
-            Category = context.Categories.Where(c => c.Id == product.CategoryId)
-                .Select(c => new CategoryResponse { Id = c.Id, Name = c.Name })
-                .FirstOrDefault()!,
-            Images = product.Images.Select(i => new ImageResponse
-            {
-                Id = i.Id,
-                ImageData = Convert.ToBase64String(i.ImageData)
-            }).ToList()
+            Category = context.Categories.Where(c => c.Id == product.CategoryId).Select(c => new CategoryResponse { Id = c.Id, Name = c.Name }).FirstOrDefault()!,
+            Images = product.Images.Select(i => new ImageResponse { Id = i.Id, ImageData = Convert.ToBase64String(i.ImageData) }).ToList()
         };
 
         return Ok(response);
+    }
+
+    private int GetUserId()
+    {
+        var idStr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        return int.TryParse(idStr, out int id) ? id : -1;
     }
 }

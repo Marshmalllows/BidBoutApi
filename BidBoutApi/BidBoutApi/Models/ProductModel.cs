@@ -33,6 +33,9 @@ public class Product
 
     [Required]
     public DateTime EndDate { get; set; }
+    
+    [Required]
+    public int Status { get; set; } = 0;
 
     [Required]
     public DateTime CreatedAt { get; set; } = DateTime.Now;

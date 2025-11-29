@@ -10,16 +10,13 @@ public class ProductResponse
     public DateTime StartDate { get; set; }
     public DateTime EndDate { get; set; }
     public int? ReservePrice { get; set; }
-
+    public int CreatorId { get; set; } 
     public int CurrentBid { get; set; } 
-    
     public string SellerName { get; set; } = string.Empty;
-    
+    public double SellerRating { get; set; } 
+    public int SellerReviewCount { get; set; }
     public string? SellerEmail { get; set; }
-    
     public string? SellerPhone { get; set; }
-
     public List<BidResponse> Bids { get; set; } = new();
-    
     public List<ImageResponse> Images { get; set; } = null!;
 }

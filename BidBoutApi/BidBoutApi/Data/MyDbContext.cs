@@ -20,4 +20,6 @@ public class MyDbContext : DbContext
     public DbSet<Bid> BidsHistory { get; set; }
     
     public DbSet<AutoBid> AutoBids { get; set; }
+    
+    public DbSet<Review> Reviews { get; set; }
 }
