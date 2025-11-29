@@ -37,7 +37,10 @@ builder.Services.AddCors(options =>
     options.AddPolicy("AllowLocalHost", policy =>
     {
         policy.WithOrigins(
-                "https://bid-bout.vercel.app/"
+                "http://localhost:5173",
+                "http://localhost:5174",
+                "https://bid-bout.vercel.app",
+                "https://bid-bout-cepfkryg2-marshmallows-projects-f83db936.vercel.app"
             )
             .AllowAnyMethod()
             .AllowAnyHeader()
@@ -59,7 +62,9 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
 app.UseCors("AllowLocalHost");
+
 app.UseAuthentication();
 app.UseAuthorization();
 
