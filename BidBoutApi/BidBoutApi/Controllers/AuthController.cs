@@ -11,6 +11,19 @@ namespace BidBoutApi.Controllers;
 [Route("api/[controller]")]
 public class AuthController(MyDbContext context, IConfiguration configuration) : ControllerBase
 {
+    private void SetTokenCookie(string token, DateTime expires)
+    {
+        var cookieOptions = new CookieOptions
+        {
+            HttpOnly = true,
+            Expires = expires,
+            Secure = true,            
+            SameSite = SameSiteMode.None 
+        };
+
+        Response.Cookies.Append("refreshToken", token, cookieOptions);
+    }
+
     [HttpPost("login")]
     public IActionResult Login([FromBody] DTOs.LoginRequest request)
     {
@@ -44,28 +57,17 @@ public class AuthController(MyDbContext context, IConfiguration configuration) :
                                    rt.Browser == request.Browser &&
                                    rt.Os == request.OS);
 
+        var refreshTokenValue = Guid.NewGuid().ToString();
+        var refreshTokenExpiry = DateTime.UtcNow.AddDays(configuration.GetValue<int>("JwtSettings:ExpiryDays"));
+
         if (existingRefreshToken != null)
         {
-            existingRefreshToken.Token = Guid.NewGuid().ToString();
-            existingRefreshToken.ExpiresAt =
-                DateTime.UtcNow.AddDays(configuration.GetValue<int>("JwtSettings:ExpiryDays"));
+            existingRefreshToken.Token = refreshTokenValue;
+            existingRefreshToken.ExpiresAt = refreshTokenExpiry;
             existingRefreshToken.UpdatedAt = DateTime.UtcNow;
-
-            context.SaveChanges();
-
-            Response.Cookies.Append("refreshToken", existingRefreshToken.Token, new CookieOptions
-            {
-                HttpOnly = true,
-                Secure = true,
-                SameSite = SameSiteMode.Strict,
-                Expires = existingRefreshToken.ExpiresAt
-            });
         }
         else
         {
-            var refreshTokenValue = Guid.NewGuid().ToString();
-            var refreshTokenExpiry = DateTime.UtcNow.AddDays(configuration.GetValue<int>("JwtSettings:ExpiryDays"));
-
             var refreshToken = new Models.RefreshToken
             {
                 UserId = user.Id,
@@ -75,18 +77,12 @@ public class AuthController(MyDbContext context, IConfiguration configuration) :
                 Browser = request.Browser,
                 Os = request.OS
             };
-
             context.RefreshTokens.Add(refreshToken);
-            context.SaveChanges();
-
-            Response.Cookies.Append("refreshToken", refreshTokenValue, new CookieOptions
-            {
-                HttpOnly = true,
-                Secure = true,
-                SameSite = SameSiteMode.Strict,
-                Expires = refreshTokenExpiry
-            });
         }
+        
+        context.SaveChanges();
+        
+        SetTokenCookie(refreshTokenValue, refreshTokenExpiry);
 
         return Ok(new
         {
@@ -94,7 +90,6 @@ public class AuthController(MyDbContext context, IConfiguration configuration) :
             user = new { user.Id, user.Email }
         });
     }
-
 
     [HttpPost("register")]
     public IActionResult Register([FromBody] DTOs.RegisterRequest request)
@@ -149,13 +144,7 @@ public class AuthController(MyDbContext context, IConfiguration configuration) :
         context.RefreshTokens.Add(refreshToken);
         context.SaveChanges();
 
-        Response.Cookies.Append("refreshToken", refreshTokenValue, new CookieOptions
-        {
-            HttpOnly = true,
-            Secure = true,
-            SameSite = SameSiteMode.Strict,
-            Expires = refreshTokenExpiry
-        });
+        SetTokenCookie(refreshTokenValue, refreshTokenExpiry);
 
         return Ok(new
         {
@@ -204,13 +193,7 @@ public class AuthController(MyDbContext context, IConfiguration configuration) :
 
         context.SaveChanges();
 
-        Response.Cookies.Append("refreshToken", refreshToken.Token, new CookieOptions
-        {
-            HttpOnly = true,
-            Secure = false,
-            SameSite = SameSiteMode.Strict,
-            Expires = refreshToken.ExpiresAt
-        });
+        SetTokenCookie(refreshToken.Token, refreshToken.ExpiresAt);
 
         return Ok(new { token = jwtToken, user = new { user.Id, user.Email } });
     }
