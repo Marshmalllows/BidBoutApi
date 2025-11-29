@@ -17,13 +17,13 @@ public class Product
     public int CategoryId { get; set; }
 
     [Required]
-    [MaxLength(20)]
+    [MaxLength(255)]
     public string Title { get; set; }
 
     public int? ReservePrice { get; set; }
 
     [Required]
-    [MaxLength(50)]
+    [MaxLength(255)]
     public string PickupPlace { get; set; }
 
     public string? Description { get; set; }
