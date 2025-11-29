@@ -22,6 +22,7 @@ public class LotsController(MyDbContext context) : ControllerBase
             .Select(p => new
             {
                 p.Id, p.Title, p.PickupPlace, p.Description, p.StartDate, p.EndDate, p.ReservePrice, p.CategoryId,
+                p.CreatorId,
                 CategoryName = p.Category.Name,
                 CurrentBid = context.BidsHistory.Where(b => b.LotId == p.Id).Max(b => (int?)b.Amount) ?? 0,
                 Images = p.Images.Select(i => new { i.Id, i.ImageData }).ToList()
@@ -31,6 +32,7 @@ public class LotsController(MyDbContext context) : ControllerBase
         var response = rawProducts.Select(p => new ProductResponse
         {
             Id = p.Id,
+            CreatorId = p.CreatorId,
             Title = p.Title,
             PickupPlace = p.PickupPlace,
             Description = p.Description,
@@ -59,9 +61,11 @@ public class LotsController(MyDbContext context) : ControllerBase
 
         if (product == null) return NotFound();
 
+        if (product.Status == 1) return NotFound("This lot has been deleted.");
+
         var sellerReviews = context.Reviews.Where(r => r.TargetUserId == product.CreatorId).ToList();
-        var sellerRating = sellerReviews.Any() ? sellerReviews.Average(r => r.Rating) : 0;
-        var reviewCount = sellerReviews.Count;
+        double sellerRating = sellerReviews.Any() ? sellerReviews.Average(r => r.Rating) : 0;
+        int reviewCount = sellerReviews.Count;
 
         var rawBids = context.BidsHistory
             .Include(b => b.Bidder)
@@ -90,9 +94,9 @@ public class LotsController(MyDbContext context) : ControllerBase
         var sellerName = (!string.IsNullOrEmpty(product.Creator.FirstName) && !string.IsNullOrEmpty(product.Creator.LastName))
             ? $"{product.Creator.FirstName} {product.Creator.LastName}" : product.Creator.Email.Split('@')[0];
 
-        var isEnded = product.EndDate <= DateTime.UtcNow;
-        var isWinner = isEnded && currentUserId.HasValue && currentUserId.Value == winnerId;
-        var isOwner = currentUserId.HasValue && currentUserId.Value == product.CreatorId;
+        bool isEnded = product.EndDate <= DateTime.UtcNow;
+        bool isWinner = isEnded && currentUserId.HasValue && currentUserId.Value == winnerId;
+        bool isOwner = currentUserId.HasValue && currentUserId.Value == product.CreatorId;
 
         var response = new ProductResponse
         {
@@ -133,6 +137,7 @@ public class LotsController(MyDbContext context) : ControllerBase
             .Select(p => new
             {
                 p.Id, p.Title, p.PickupPlace, p.Description, p.StartDate, p.EndDate, p.ReservePrice, p.CategoryId,
+                p.CreatorId,
                 CategoryName = p.Category.Name,
                 CurrentBid = context.BidsHistory.Where(b => b.LotId == p.Id).Max(b => (int?)b.Amount) ?? 0,
                 Images = p.Images.Select(i => new { i.Id, i.ImageData }).ToList()
@@ -142,6 +147,7 @@ public class LotsController(MyDbContext context) : ControllerBase
         var response = rawProducts.Select(p => new ProductResponse
         {
             Id = p.Id,
+            CreatorId = p.CreatorId,
             Title = p.Title,
             PickupPlace = p.PickupPlace,
             Description = p.Description,
@@ -184,6 +190,12 @@ public class LotsController(MyDbContext context) : ControllerBase
         var userId = GetUserId();
         if (userId == -1) return Unauthorized();
 
+        if (string.IsNullOrEmpty(dto.Title) || dto.Title.Length > 100) return BadRequest("Title must be between 1 and 100 characters");
+        if (string.IsNullOrEmpty(dto.PickupPlace) || dto.PickupPlace.Length > 100) return BadRequest("Pickup place must be under 100 characters");
+        if (dto.ReservePrice < 0) return BadRequest("Reserve price cannot be negative");
+        
+        if (dto.Duration <= 0 || dto.Duration > 30) return BadRequest("Duration must be between 1 and 30 days");
+
         var product = await context.Products.Include(p => p.Images).FirstOrDefaultAsync(p => p.Id == id);
         if (product == null) return NotFound();
 
@@ -192,12 +204,15 @@ public class LotsController(MyDbContext context) : ControllerBase
         if (product.StartDate <= DateTime.UtcNow)
             return BadRequest("Cannot edit lot that has already started");
 
+        var utcStart = dto.StartDate.ToUniversalTime();
+        if (utcStart < DateTime.UtcNow.AddMinutes(-5)) return BadRequest("Start date cannot be in the past");
+        if (utcStart > DateTime.UtcNow.AddYears(1)) return BadRequest("Start date cannot be more than 1 year in the future");
+
         product.Title = dto.Title;
         product.CategoryId = dto.CategoryId;
         product.PickupPlace = dto.PickupPlace;
         product.Description = dto.Description;
         
-        var utcStart = dto.StartDate.ToUniversalTime();
         product.StartDate = utcStart;
         product.EndDate = utcStart.AddDays(dto.Duration);
         product.ReservePrice = dto.ReservePrice;
@@ -205,14 +220,8 @@ public class LotsController(MyDbContext context) : ControllerBase
 
         if (deletedImageIds != null && deletedImageIds.Any())
         {
-            var imagesToDelete = product.Images
-                .Where(i => deletedImageIds.Contains(i.Id))
-                .ToList();
-
-            if (imagesToDelete.Any())
-            {
-                context.Images.RemoveRange(imagesToDelete);
-            }
+            var imagesToDelete = product.Images.Where(i => deletedImageIds.Contains(i.Id)).ToList();
+            if (imagesToDelete.Any()) context.Images.RemoveRange(imagesToDelete);
         }
 
         if (dto.Images.Length > 0)
@@ -243,8 +252,16 @@ public class LotsController(MyDbContext context) : ControllerBase
 
         if (dto.Images.Length == 0) return BadRequest("No images uploaded");
         if (dto.Images.Length > 50) return BadRequest("Too many images.");
+        
+        if (string.IsNullOrEmpty(dto.Title) || dto.Title.Length > 100) return BadRequest("Title must be between 1 and 100 characters");
+        if (string.IsNullOrEmpty(dto.PickupPlace) || dto.PickupPlace.Length > 100) return BadRequest("Pickup place must be under 100 characters");
+        if (dto.ReservePrice < 0) return BadRequest("Reserve price cannot be negative");
 
-        var utcStartDate = dto.StartDate.ToUniversalTime();
+        if (dto.Duration <= 0 || dto.Duration > 30) return BadRequest("Duration must be between 1 and 30 days");
+
+        var utcStart = dto.StartDate.ToUniversalTime();
+        if (utcStart < DateTime.UtcNow.AddMinutes(-5)) return BadRequest("Start date cannot be in the past");
+        if (utcStart > DateTime.UtcNow.AddYears(1)) return BadRequest("Start date cannot be more than 1 year in the future");
 
         var product = new Product
         {
@@ -252,8 +269,8 @@ public class LotsController(MyDbContext context) : ControllerBase
             CategoryId = dto.CategoryId,
             PickupPlace = dto.PickupPlace,
             Description = dto.Description,
-            StartDate = utcStartDate,
-            EndDate = utcStartDate.AddDays(dto.Duration),
+            StartDate = utcStart,
+            EndDate = utcStart.AddDays(dto.Duration),
             ReservePrice = dto.ReservePrice,
             CreatorId = user.Id,
             Images = new List<Image>(),
@@ -276,6 +293,7 @@ public class LotsController(MyDbContext context) : ControllerBase
         var response = new ProductResponse
         {
             Id = product.Id,
+            CreatorId = product.CreatorId,
             Title = product.Title,
             PickupPlace = product.PickupPlace,
             Description = product.Description,
