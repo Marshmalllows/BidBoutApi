@@ -12,7 +12,7 @@ namespace BidBoutApi.Controllers;
 [Route("api/[controller]")]
 public class BidsController(MyDbContext context) : ControllerBase
 {
-    private const int MinStep = 10; 
+    private const int MinStep = 10;
 
     [HttpPost]
     [Authorize]
@@ -62,58 +62,72 @@ public class BidsController(MyDbContext context) : ControllerBase
         return Ok(new { newPrice = result.NewPrice, message = "Auto bid set successfully" });
     }
 
-    private async Task<(bool Success, string Message, int NewPrice)> ProcessBidding(int lotId, int bidderId, int amount, bool isAutoBidSetup)
+    private async Task<(bool Success, string Message, int NewPrice)> ProcessBidding(int lotId, int initialBidderId, int amount, bool isAutoBidSetup)
     {
         var lot = await context.Products.FindAsync(lotId);
         if (lot == null) return (false, "Lot not found", 0);
         if (lot.EndDate < DateTime.UtcNow) return (false, "Auction has ended", 0);
-        if (lot.StartDate > DateTime.UtcNow) return (false, "Auction has not started yet", 0); 
+        if (lot.StartDate > DateTime.UtcNow) return (false, "Auction has not started yet", 0);
+
         var currentHighestBid = await context.BidsHistory
             .Where(b => b.LotId == lotId)
             .OrderByDescending(b => b.Amount)
             .FirstOrDefaultAsync();
 
         var currentPrice = currentHighestBid?.Amount ?? 0;
+        var currentWinnerId = currentHighestBid?.BidderId ?? -1;
 
         if (!isAutoBidSetup)
         {
             if (amount <= currentPrice) return (false, $"Bid must be higher than {currentPrice}", currentPrice);
             
-            await AddBidToHistory(lotId, bidderId, amount);
+            await AddBidToHistory(lotId, initialBidderId, amount);
             currentPrice = amount;
+            currentWinnerId = initialBidderId;
         }
         else 
         {
-            if (currentHighestBid != null && currentHighestBid.BidderId == bidderId)
+            if (currentWinnerId != initialBidderId)
             {
-                return (true, "Updated limit", currentPrice);
-            }
+                var bidToPlace = currentPrice + MinStep;
+                if (currentPrice == 0) bidToPlace = Math.Max(lot.ReservePrice ?? 10, 10);
 
-            int bidToPlace = currentPrice + MinStep;
-            
-            if (currentPrice == 0) bidToPlace = Math.Max(lot.ReservePrice ?? 10, 10);
+                if (bidToPlace > amount) bidToPlace = amount;
 
-            if (bidToPlace > amount) bidToPlace = amount;
-
-            if (bidToPlace > currentPrice)
-            {
-                await AddBidToHistory(lotId, bidderId, bidToPlace);
-                currentPrice = bidToPlace;
+                if (bidToPlace > currentPrice)
+                {
+                    await AddBidToHistory(lotId, initialBidderId, bidToPlace);
+                    currentPrice = bidToPlace;
+                    currentWinnerId = initialBidderId;
+                }
             }
         }
 
-        var defender = await context.AutoBids
-            .Where(ab => ab.LotId == lotId && ab.UserId != bidderId && ab.MaxAmount > currentPrice)
-            .OrderByDescending(ab => ab.MaxAmount) 
-            .FirstOrDefaultAsync();
+        while (true)
+        {
+            var defender = await context.AutoBids
+                .Where(ab => ab.LotId == lotId && ab.UserId != currentWinnerId && ab.MaxAmount > currentPrice)
+                .OrderByDescending(ab => ab.MaxAmount)
+                .FirstOrDefaultAsync();
 
-        if (defender == null) return (true, "Success", currentPrice);
-        var defenseBid = currentPrice + MinStep;
-        if (defenseBid > defender.MaxAmount) defenseBid = defender.MaxAmount;
+            if (defender == null) 
+            {
+                break;
+            }
 
-        if (defenseBid <= currentPrice) return (true, "Success", currentPrice);
-        await AddBidToHistory(lotId, defender.UserId, defenseBid);
-        currentPrice = defenseBid;
+            var defenseBid = currentPrice + MinStep;
+            
+            if (defenseBid > defender.MaxAmount) 
+                defenseBid = defender.MaxAmount;
+
+            if (defenseBid <= currentPrice) 
+                break;
+
+            await AddBidToHistory(lotId, defender.UserId, defenseBid);
+            
+            currentPrice = defenseBid;
+            currentWinnerId = defender.UserId;
+        }
 
         return (true, "Success", currentPrice);
     }
@@ -134,6 +148,6 @@ public class BidsController(MyDbContext context) : ControllerBase
     private int GetUserId()
     {
         var idStr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        return int.TryParse(idStr, out int id) ? id : -1;
+        return int.TryParse(idStr, out var id) ? id : -1;
     }
 }

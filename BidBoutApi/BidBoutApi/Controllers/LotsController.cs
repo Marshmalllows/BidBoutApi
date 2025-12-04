@@ -17,15 +17,21 @@ public class LotsController(MyDbContext context) : ControllerBase
     {
         var rawProducts = context.Products
             .Include(p => p.Category)
-            .Include(p => p.Images)
-            .Where(p => p.Status == 0) 
+            .Where(p => p.Status == 0)
             .Select(p => new
             {
-                p.Id, p.Title, p.PickupPlace, p.Description, p.StartDate, p.EndDate, p.ReservePrice, p.CategoryId,
+                p.Id,
+                p.Title,
+                p.PickupPlace,
+                p.Description,
+                p.StartDate,
+                p.EndDate,
+                p.ReservePrice,
+                p.CategoryId,
                 p.CreatorId,
                 CategoryName = p.Category.Name,
                 CurrentBid = context.BidsHistory.Where(b => b.LotId == p.Id).Max(b => (int?)b.Amount) ?? 0,
-                Images = p.Images.Select(i => new { i.Id, i.ImageData }).ToList()
+                FirstImage = p.Images.OrderBy(i => i.Id).Select(i => new { i.Id, i.ImageData }).FirstOrDefault()
             })
             .ToList();
 
@@ -41,7 +47,13 @@ public class LotsController(MyDbContext context) : ControllerBase
             ReservePrice = p.ReservePrice,
             CurrentBid = p.CurrentBid,
             Category = new CategoryResponse { Id = p.CategoryId, Name = p.CategoryName },
-            Images = p.Images.Select(i => new ImageResponse { Id = i.Id, ImageData = Convert.ToBase64String(i.ImageData) }).ToList()
+            Images = p.FirstImage != null
+                ?
+                [
+                    new ImageResponse
+                        { Id = p.FirstImage.Id, ImageData = Convert.ToBase64String(p.FirstImage.ImageData) }
+                ]
+                : []
         }).ToList();
 
         return Ok(response);
@@ -71,10 +83,15 @@ public class LotsController(MyDbContext context) : ControllerBase
             .Include(b => b.Bidder)
             .Where(b => b.LotId == id)
             .OrderByDescending(b => b.Amount)
-            .Select(b => new 
+            .Select(b => new
             {
-                b.Id, b.Amount, b.CreatedAt, b.BidderId,
-                FirstName = b.Bidder.FirstName, LastName = b.Bidder.LastName, Email = b.Bidder.Email
+                b.Id,
+                b.Amount,
+                b.CreatedAt,
+                b.BidderId,
+                b.Bidder.FirstName,
+                b.Bidder.LastName,
+                b.Bidder.Email
             })
             .ToList();
 
@@ -94,9 +111,9 @@ public class LotsController(MyDbContext context) : ControllerBase
         var sellerName = (!string.IsNullOrEmpty(product.Creator.FirstName) && !string.IsNullOrEmpty(product.Creator.LastName))
             ? $"{product.Creator.FirstName} {product.Creator.LastName}" : product.Creator.Email.Split('@')[0];
 
-        bool isEnded = product.EndDate <= DateTime.UtcNow;
-        bool isWinner = isEnded && currentUserId.HasValue && currentUserId.Value == winnerId;
-        bool isOwner = currentUserId.HasValue && currentUserId.Value == product.CreatorId;
+        var isEnded = product.EndDate <= DateTime.UtcNow;
+        var isWinner = isEnded && currentUserId.HasValue && currentUserId.Value == winnerId;
+        var isOwner = currentUserId.HasValue && currentUserId.Value == product.CreatorId;
 
         var response = new ProductResponse
         {
@@ -131,16 +148,22 @@ public class LotsController(MyDbContext context) : ControllerBase
 
         var rawProducts = context.Products
             .Include(p => p.Category)
-            .Include(p => p.Images)
             .Where(p => p.CreatorId == userId && p.Status == 0)
             .OrderByDescending(p => p.CreatedAt)
             .Select(p => new
             {
-                p.Id, p.Title, p.PickupPlace, p.Description, p.StartDate, p.EndDate, p.ReservePrice, p.CategoryId,
+                p.Id,
+                p.Title,
+                p.PickupPlace,
+                p.Description,
+                p.StartDate,
+                p.EndDate,
+                p.ReservePrice,
+                p.CategoryId,
                 p.CreatorId,
                 CategoryName = p.Category.Name,
                 CurrentBid = context.BidsHistory.Where(b => b.LotId == p.Id).Max(b => (int?)b.Amount) ?? 0,
-                Images = p.Images.Select(i => new { i.Id, i.ImageData }).ToList()
+                FirstImage = p.Images.OrderBy(i => i.Id).Select(i => new { i.Id, i.ImageData }).FirstOrDefault()
             })
             .ToList();
 
@@ -156,7 +179,13 @@ public class LotsController(MyDbContext context) : ControllerBase
             ReservePrice = p.ReservePrice,
             CurrentBid = p.CurrentBid,
             Category = new CategoryResponse { Id = p.CategoryId, Name = p.CategoryName },
-            Images = p.Images.Select(i => new ImageResponse { Id = i.Id, ImageData = Convert.ToBase64String(i.ImageData) }).ToList()
+            Images = p.FirstImage != null
+                ?
+                [
+                    new ImageResponse
+                        { Id = p.FirstImage.Id, ImageData = Convert.ToBase64String(p.FirstImage.ImageData) }
+                ]
+                : []
         }).ToList();
 
         return Ok(response);
@@ -174,10 +203,10 @@ public class LotsController(MyDbContext context) : ControllerBase
 
         if (product.CreatorId != userId) return Forbid();
 
-        if (product.EndDate <= DateTime.UtcNow) 
+        if (product.EndDate <= DateTime.UtcNow)
             return BadRequest("Cannot delete closed auction");
 
-        product.Status = 1; 
+        product.Status = 1;
         await context.SaveChangesAsync();
 
         return Ok(new { message = "Lot cancelled successfully" });
@@ -193,8 +222,8 @@ public class LotsController(MyDbContext context) : ControllerBase
         if (string.IsNullOrEmpty(dto.Title) || dto.Title.Length > 100) return BadRequest("Title must be between 1 and 100 characters");
         if (string.IsNullOrEmpty(dto.PickupPlace) || dto.PickupPlace.Length > 100) return BadRequest("Pickup place must be under 100 characters");
         if (dto.ReservePrice < 0) return BadRequest("Reserve price cannot be negative");
-        
-        if (dto.Duration <= 0 || dto.Duration > 30) return BadRequest("Duration must be between 1 and 30 days");
+
+        if (dto.Duration is <= 0 or > 30) return BadRequest("Duration must be between 1 and 30 days");
 
         var product = await context.Products.Include(p => p.Images).FirstOrDefaultAsync(p => p.Id == id);
         if (product == null) return NotFound();
@@ -212,7 +241,7 @@ public class LotsController(MyDbContext context) : ControllerBase
         product.CategoryId = dto.CategoryId;
         product.PickupPlace = dto.PickupPlace;
         product.Description = dto.Description;
-        
+
         product.StartDate = utcStart;
         product.EndDate = utcStart.AddDays(dto.Duration);
         product.ReservePrice = dto.ReservePrice;
@@ -221,7 +250,7 @@ public class LotsController(MyDbContext context) : ControllerBase
         if (deletedImageIds != null && deletedImageIds.Any())
         {
             var imagesToDelete = product.Images.Where(i => deletedImageIds.Contains(i.Id)).ToList();
-            if (imagesToDelete.Any()) context.Images.RemoveRange(imagesToDelete);
+            if (imagesToDelete.Count != 0) context.Images.RemoveRange(imagesToDelete);
         }
 
         if (dto.Images.Length > 0)
@@ -250,9 +279,14 @@ public class LotsController(MyDbContext context) : ControllerBase
         var user = context.Users.SingleOrDefault(u => u.Id == refreshToken.UserId);
         if (user == null) return Unauthorized("User not found!");
 
-        if (dto.Images.Length == 0) return BadRequest("No images uploaded");
-        if (dto.Images.Length > 50) return BadRequest("Too many images.");
-        
+        switch (dto.Images.Length)
+        {
+            case 0:
+                return BadRequest("No images uploaded");
+            case > 50:
+                return BadRequest("Too many images.");
+        }
+
         if (string.IsNullOrEmpty(dto.Title) || dto.Title.Length > 100) return BadRequest("Title must be between 1 and 100 characters");
         if (string.IsNullOrEmpty(dto.PickupPlace) || dto.PickupPlace.Length > 100) return BadRequest("Pickup place must be under 100 characters");
         if (dto.ReservePrice < 0) return BadRequest("Reserve price cannot be negative");
@@ -311,6 +345,6 @@ public class LotsController(MyDbContext context) : ControllerBase
     private int GetUserId()
     {
         var idStr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        return int.TryParse(idStr, out int id) ? id : -1;
+        return int.TryParse(idStr, out var id) ? id : -1;
     }
 }
